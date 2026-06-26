@@ -2,14 +2,15 @@ import axios from 'axios'
 import { getCurrentSession, isValidTradingSession } from './sessionValidator'
 import { TRADING_CONSTANTS } from '../utils/constants'
 
-const COINGECKO_URL = 'https://api.coingecko.com/api/v3/simple/price'
-const COIN_ID = 'tether-gold'
-const VS_CURRENCY = 'usd'
-const ANALYSIS_CACHE_TTL_MS = 60_000
-const ANALYSIS_CACHE_FALLBACK_MS = 5 * 60_000
+const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr'
+const SYMBOL = 'XAUUSDT'
+const ANALYSIS_CACHE_TTL_MS = 5 * 60_000
+const ANALYSIS_CACHE_FALLBACK_MS = 10 * 60_000
+const RATE_LIMIT_BACKOFF_MS = 10 * 60_000
 
 let cachedAnalysis: MarketAnalysis | null = null
 let cachedAnalysisTimestamp = 0
+let rateLimitBackoffUntil = 0
 
 export interface SignalRuleCheck {
   rule: string
@@ -18,7 +19,7 @@ export interface SignalRuleCheck {
 
 export interface MarketAnalysis {
   symbol: 'XAUUSD'
-  source: 'CoinGecko'
+  source: 'Binance'
   currentPrice: number
   change24h?: number
   fetched_at: string
@@ -45,34 +46,31 @@ function round(value: number, step = 0.01) {
   return Math.round(value / step) * step
 }
 
-async function fetchCoinGeckoPrice() {
+async function fetchBinancePrice() {
   try {
-    const response = await axios.get(COINGECKO_URL, {
+    const response = await axios.get(BINANCE_TICKER_URL, {
       params: {
-        ids: COIN_ID,
-        vs_currencies: VS_CURRENCY,
-        include_24hr_change: true,
+        symbol: SYMBOL,
       },
     })
 
-    const payload = response.data?.[COIN_ID]
-    if (!payload || typeof payload[VS_CURRENCY] !== 'number') {
-      throw new Error('Unable to fetch XAUUSD price')
+    const payload = response.data
+    const price = Number(payload?.lastPrice)
+    const change24h = Number(payload?.priceChangePercent)
+
+    if (!payload || Number.isNaN(price)) {
+      throw new Error('Unable to fetch XAUUSD price from Binance')
     }
 
-    const change24h = typeof payload[`${VS_CURRENCY}_24h_change`] === 'number'
-      ? payload[`${VS_CURRENCY}_24h_change`] as number
-      : undefined
-
     return {
-      price: payload[VS_CURRENCY] as number,
-      change24h,
+      price,
+      change24h: Number.isNaN(change24h) ? undefined : change24h,
     }
   } catch (error: any) {
     if (axios.isAxiosError(error) && error.response?.status === 429) {
-      throw new Error('CoinGecko rate limit exceeded (429 Too Many Requests)')
+      throw new Error('Binance rate limit exceeded (429 Too Many Requests)')
     }
-    throw new Error(error?.message ?? 'Unable to fetch XAUUSD price')
+    throw new Error(error?.message ?? 'Unable to fetch XAUUSD price from Binance')
   }
 }
 
@@ -166,8 +164,16 @@ export async function analyzeMarket(): Promise<MarketAnalysis> {
     return cachedAnalysis
   }
 
+  if (rateLimitBackoffUntil && now < rateLimitBackoffUntil) {
+    if (cachedAnalysis) {
+      console.warn('Returning cached analysis during rate limit backoff')
+      return cachedAnalysis
+    }
+    throw new Error('CoinGecko rate limit backoff in effect and no cached analysis available')
+  }
+
   try {
-    const { price, change24h } = await fetchCoinGeckoPrice()
+    const { price, change24h } = await fetchBinancePrice()
     const session = getCurrentSession()
     const isValidSession = isValidTradingSession(session)
     const trend = buildMarketStructure(price, change24h)
@@ -191,7 +197,7 @@ export async function analyzeMarket(): Promise<MarketAnalysis> {
 
     const analysis: MarketAnalysis = {
       symbol: 'XAUUSD',
-      source: 'CoinGecko',
+      source: 'Binance',
       currentPrice: price,
       change24h,
       fetched_at: new Date().toISOString(),
@@ -217,8 +223,14 @@ export async function analyzeMarket(): Promise<MarketAnalysis> {
     analysis.ruleChecks = buildRuleChecks(analysis)
     cachedAnalysis = analysis
     cachedAnalysisTimestamp = now
+    rateLimitBackoffUntil = 0
     return analysis
   } catch (error: any) {
+    if (axios.isAxiosError(error) && error.response?.status === 429) {
+      rateLimitBackoffUntil = now + RATE_LIMIT_BACKOFF_MS
+      console.warn('Entering Binance rate limit backoff until', new Date(rateLimitBackoffUntil).toISOString())
+    }
+
     if (cachedAnalysis && now - cachedAnalysisTimestamp < ANALYSIS_CACHE_FALLBACK_MS) {
       console.warn('Using cached analysis due to market data fetch failure:', error?.message ?? error)
       return cachedAnalysis
