@@ -5,6 +5,11 @@ import { TRADING_CONSTANTS } from '../utils/constants'
 const COINGECKO_URL = 'https://api.coingecko.com/api/v3/simple/price'
 const COIN_ID = 'tether-gold'
 const VS_CURRENCY = 'usd'
+const ANALYSIS_CACHE_TTL_MS = 60_000
+const ANALYSIS_CACHE_FALLBACK_MS = 5 * 60_000
+
+let cachedAnalysis: MarketAnalysis | null = null
+let cachedAnalysisTimestamp = 0
 
 export interface SignalRuleCheck {
   rule: string
@@ -41,26 +46,33 @@ function round(value: number, step = 0.01) {
 }
 
 async function fetchCoinGeckoPrice() {
-  const response = await axios.get(COINGECKO_URL, {
-    params: {
-      ids: COIN_ID,
-      vs_currencies: VS_CURRENCY,
-      include_24hr_change: true,
-    },
-  })
+  try {
+    const response = await axios.get(COINGECKO_URL, {
+      params: {
+        ids: COIN_ID,
+        vs_currencies: VS_CURRENCY,
+        include_24hr_change: true,
+      },
+    })
 
-  const payload = response.data?.[COIN_ID]
-  if (!payload || typeof payload[VS_CURRENCY] !== 'number') {
-    throw new Error('Unable to fetch XAUUSD price')
-  }
+    const payload = response.data?.[COIN_ID]
+    if (!payload || typeof payload[VS_CURRENCY] !== 'number') {
+      throw new Error('Unable to fetch XAUUSD price')
+    }
 
-  const change24h = typeof payload[`${VS_CURRENCY}_24h_change`] === 'number'
-    ? payload[`${VS_CURRENCY}_24h_change`] as number
-    : undefined
+    const change24h = typeof payload[`${VS_CURRENCY}_24h_change`] === 'number'
+      ? payload[`${VS_CURRENCY}_24h_change`] as number
+      : undefined
 
-  return {
-    price: payload[VS_CURRENCY] as number,
-    change24h,
+    return {
+      price: payload[VS_CURRENCY] as number,
+      change24h,
+    }
+  } catch (error: any) {
+    if (axios.isAxiosError(error) && error.response?.status === 429) {
+      throw new Error('CoinGecko rate limit exceeded (429 Too Many Requests)')
+    }
+    throw new Error(error?.message ?? 'Unable to fetch XAUUSD price')
   }
 }
 
@@ -149,53 +161,68 @@ function buildRuleChecks(analysis: MarketAnalysis): SignalRuleCheck[] {
 }
 
 export async function analyzeMarket(): Promise<MarketAnalysis> {
-  const { price, change24h } = await fetchCoinGeckoPrice()
-  const session = getCurrentSession()
-  const isValidSession = isValidTradingSession(session)
-  const trend = buildMarketStructure(price, change24h)
-  const setupType = chooseSetupType(price, change24h)
-  const setupGrade = chooseGrade(setupType, change24h)
-  const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-  const { support, resistance, stopLoss, takeProfit } = buildLevels(price, trend)
-  const entryZone = buildEntryZone(price, trend, support, resistance)
-  const takeProfitLevels = buildTakeProfitLevels(price, trend)
-  const rrRatio = round(Math.abs(takeProfit - price) / Math.abs(stopLoss - price), 0.1)
-  const recommendation = trend === 'Bullish' ? 'BUY' : trend === 'Bearish' ? 'SELL' : 'WAIT'
-  const formattedSignal = buildFormattedSignal('XAUUSD', recommendation, entryZone, stopLoss, takeProfitLevels)
-  const analysisSummary = [
-    `Session: ${session.replace('_', ' ')}`,
-    `Trend bias: ${trend}`,
-    `Setup: ${setupType.replace('_', ' ')}`,
-    `Grade: ${setupGrade}`,
-    `Recommended action: ${recommendation}`,
-    `Risk:Reward: 1:${rrRatio.toFixed(1)}`,
-  ]
-
-  const analysis: MarketAnalysis = {
-    symbol: 'XAUUSD',
-    source: 'CoinGecko',
-    currentPrice: price,
-    change24h,
-    fetched_at: new Date().toISOString(),
-    currentTime,
-    session,
-    isValidSession,
-    trend,
-    setupType,
-    setupGrade,
-    support,
-    resistance,
-    entryZone,
-    stopLoss,
-    takeProfit,
-    takeProfitLevels,
-    rrRatio,
-    recommendation,
-    formattedSignal,
-    analysisSummary,
-    ruleChecks: [],
+  const now = Date.now()
+  if (cachedAnalysis && now - cachedAnalysisTimestamp < ANALYSIS_CACHE_TTL_MS) {
+    return cachedAnalysis
   }
 
-  analysis.ruleChecks = buildRuleChecks(analysis)
-  return analysis
+  try {
+    const { price, change24h } = await fetchCoinGeckoPrice()
+    const session = getCurrentSession()
+    const isValidSession = isValidTradingSession(session)
+    const trend = buildMarketStructure(price, change24h)
+    const setupType = chooseSetupType(price, change24h)
+    const setupGrade = chooseGrade(setupType, change24h)
+    const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    const { support, resistance, stopLoss, takeProfit } = buildLevels(price, trend)
+    const entryZone = buildEntryZone(price, trend, support, resistance)
+    const takeProfitLevels = buildTakeProfitLevels(price, trend)
+    const rrRatio = round(Math.abs(takeProfit - price) / Math.abs(stopLoss - price), 0.1)
+    const recommendation = trend === 'Bullish' ? 'BUY' : trend === 'Bearish' ? 'SELL' : 'WAIT'
+    const formattedSignal = buildFormattedSignal('XAUUSD', recommendation, entryZone, stopLoss, takeProfitLevels)
+    const analysisSummary = [
+      `Session: ${session.replace('_', ' ')}`,
+      `Trend bias: ${trend}`,
+      `Setup: ${setupType.replace('_', ' ')}`,
+      `Grade: ${setupGrade}`,
+      `Recommended action: ${recommendation}`,
+      `Risk:Reward: 1:${rrRatio.toFixed(1)}`,
+    ]
+
+    const analysis: MarketAnalysis = {
+      symbol: 'XAUUSD',
+      source: 'CoinGecko',
+      currentPrice: price,
+      change24h,
+      fetched_at: new Date().toISOString(),
+      currentTime,
+      session,
+      isValidSession,
+      trend,
+      setupType,
+      setupGrade,
+      support,
+      resistance,
+      entryZone,
+      stopLoss,
+      takeProfit,
+      takeProfitLevels,
+      rrRatio,
+      recommendation,
+      formattedSignal,
+      analysisSummary,
+      ruleChecks: [],
+    }
+
+    analysis.ruleChecks = buildRuleChecks(analysis)
+    cachedAnalysis = analysis
+    cachedAnalysisTimestamp = now
+    return analysis
+  } catch (error: any) {
+    if (cachedAnalysis && now - cachedAnalysisTimestamp < ANALYSIS_CACHE_FALLBACK_MS) {
+      console.warn('Using cached analysis due to market data fetch failure:', error?.message ?? error)
+      return cachedAnalysis
+    }
+    throw error
+  }
 }

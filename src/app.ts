@@ -29,8 +29,11 @@ app.use('/api', marketRoutes)
 app.use('/api', marketAnalysisRoutes)
 
 // Error handling middleware
-app.use((err: any, req: express.Request, res: express.Response) => {
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(err.stack)
+  if (res.headersSent) {
+    return next(err)
+  }
   res.status(500).json({ error: 'Internal server error' })
 })
 
