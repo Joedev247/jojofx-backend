@@ -2,7 +2,13 @@ import axios from 'axios'
 import { getCurrentSession, isValidTradingSession } from './sessionValidator'
 import { TRADING_CONSTANTS } from '../utils/constants'
 
-const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr'
+const BINANCE_TICKER_URLS = [
+  'https://api.binance.com/api/v3/ticker/24hr',
+  'https://api1.binance.com/api/v3/ticker/24hr',
+  'https://api2.binance.com/api/v3/ticker/24hr',
+  'https://api3.binance.com/api/v3/ticker/24hr',
+  'https://www.binance.com/api/v3/ticker/24hr',
+]
 const SYMBOL = 'XAUTUSDT'
 const ANALYSIS_CACHE_TTL_MS = 5 * 60_000
 const ANALYSIS_CACHE_FALLBACK_MS = 10 * 60_000
@@ -47,31 +53,44 @@ function round(value: number, step = 0.01) {
 }
 
 async function fetchBinancePrice() {
-  try {
-    const response = await axios.get(BINANCE_TICKER_URL, {
-      params: {
-        symbol: SYMBOL,
-      },
-    })
+  let lastError: any = null
 
-    const payload = response.data
-    const price = Number(payload?.lastPrice)
-    const change24h = Number(payload?.priceChangePercent)
+  for (const url of BINANCE_TICKER_URLS) {
+    try {
+      const response = await axios.get(url, {
+        params: { symbol: SYMBOL },
+        timeout: 10000,
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; JOJOFX-Bot/1.0)',
+        },
+      })
 
-    if (!payload || Number.isNaN(price)) {
-      throw new Error('Unable to fetch XAUUSD price from Binance')
-    }
+      const payload = response.data
+      const price = Number(payload?.lastPrice)
+      const change24h = Number(payload?.priceChangePercent)
 
-    return {
-      price,
-      change24h: Number.isNaN(change24h) ? undefined : change24h,
+      if (!payload || Number.isNaN(price)) {
+        throw new Error(`Binance returned invalid payload from ${url}`)
+      }
+
+      return {
+        price,
+        change24h: Number.isNaN(change24h) ? undefined : change24h,
+      }
+    } catch (error: any) {
+      lastError = error
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined
+      const message = status ? `status ${status}` : error?.message ?? 'unknown error'
+      console.warn(`Binance fetch failed for ${url}: ${message}`)
+
+      if (status === 429) {
+        throw new Error('Binance rate limit exceeded (429 Too Many Requests)')
+      }
     }
-  } catch (error: any) {
-    if (axios.isAxiosError(error) && error.response?.status === 429) {
-      throw new Error('Binance rate limit exceeded (429 Too Many Requests)')
-    }
-    throw new Error(error?.message ?? 'Unable to fetch XAUUSD price from Binance')
   }
+
+  throw new Error(lastError?.message ?? 'Unable to fetch XAUUSD price from Binance')
 }
 
 function buildMarketStructure(price: number, change24h?: number) {
