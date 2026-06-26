@@ -169,7 +169,7 @@ export async function analyzeMarket(): Promise<MarketAnalysis> {
       console.warn('Returning cached analysis during rate limit backoff')
       return cachedAnalysis
     }
-    throw new Error('CoinGecko rate limit backoff in effect and no cached analysis available')
+    throw new Error('Binance rate limit backoff in effect and no cached analysis available')
   }
 
   try {

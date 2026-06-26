@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr'
-const SYMBOL = 'XAUUSDT'
+const SYMBOL = 'XAUTUSDT'
 
 export interface MarketPrice {
   symbol: 'XAUUSD'
