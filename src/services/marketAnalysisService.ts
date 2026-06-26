@@ -3,7 +3,7 @@ import { getCurrentSession, isValidTradingSession } from './sessionValidator'
 import { TRADING_CONSTANTS } from '../utils/constants'
 
 const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr'
-const SYMBOL = 'XAUUSDT'
+const SYMBOL = 'XAUTUSDT'
 const ANALYSIS_CACHE_TTL_MS = 5 * 60_000
 const ANALYSIS_CACHE_FALLBACK_MS = 10 * 60_000
 const RATE_LIMIT_BACKOFF_MS = 10 * 60_000
