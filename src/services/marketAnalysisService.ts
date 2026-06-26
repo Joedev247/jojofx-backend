@@ -3,11 +3,11 @@ import { getCurrentSession, isValidTradingSession } from './sessionValidator'
 import { TRADING_CONSTANTS } from '../utils/constants'
 
 const BINANCE_TICKER_URLS = [
-  'https://api.binance.com/api/v3/ticker/24hr',
-  'https://api1.binance.com/api/v3/ticker/24hr',
-  'https://api2.binance.com/api/v3/ticker/24hr',
-  'https://api3.binance.com/api/v3/ticker/24hr',
   'https://www.binance.com/api/v3/ticker/24hr',
+  'https://api.binance.com/api/v3/ticker/price',
+  'https://api1.binance.com/api/v3/ticker/price',
+  'https://api2.binance.com/api/v3/ticker/price',
+  'https://api3.binance.com/api/v3/ticker/price',
 ]
 const SYMBOL = 'XAUTUSDT'
 const ANALYSIS_CACHE_TTL_MS = 5 * 60_000
@@ -67,7 +67,7 @@ async function fetchBinancePrice() {
       })
 
       const payload = response.data
-      const price = Number(payload?.lastPrice)
+      const price = Number(payload?.lastPrice ?? payload?.price)
       const change24h = Number(payload?.priceChangePercent)
 
       if (!payload || Number.isNaN(price)) {
